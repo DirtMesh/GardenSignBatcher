@@ -1,10 +1,13 @@
 OpenSCAD Sign Batch Generator
 =============================
 
-This application batch-generates STL files using OpenSCAD from a simple
-spreadsheet or CSV file.
+OpenSCAD Sign Batch Generator is a Windows desktop application for
+batch-generating STL files using OpenSCAD from a simple spreadsheet
+or CSV file.
 
-No Python knowledge is required.
+It provides a graphical interface for previewing, validating, and
+selectively generating sign models without requiring any Python or
+OpenSCAD scripting knowledge.
 
 
 REQUIREMENTS
@@ -16,8 +19,9 @@ REQUIREMENTS
 Download OpenSCAD from:
 https://openscad.org/downloads.html
 
-During first launch, the app will try to auto-detect OpenSCAD.
-If it is not found, use the "Browse..." button to locate openscad.exe.
+On first launch, the application will attempt to auto-detect OpenSCAD.
+If it is not found, use the "Browse..." button to locate openscad.exe
+manually.
 
 
 HOW TO RUN
@@ -26,9 +30,10 @@ HOW TO RUN
 1. Unzip the downloaded folder
 2. Double-click GardenSign.exe
 3. Select an input spreadsheet or CSV file
-4. Select an output folder
+4. (If using Excel) Select the worksheet to use
 5. Review the preview table
-6. Click Generate
+6. Select an output folder
+7. Click Generate
 
 
 INPUT FILE FORMAT
@@ -62,25 +67,36 @@ Notes:
 - Leading and trailing spaces are ignored
 - Blank crop_name rows are skipped
 - Invalid rows are shown in the preview with a reason
+- Row numbers shown match the original file
 
 
 PREVIEW TABLE
 -------------
 
-The preview shows:
+The preview table displays:
 - Row number from the input file
-- crop_name and cultivar
+- crop_name and cultivar values
 - Whether the row is valid
-- Reason for invalid rows
+- A reason for invalid rows
 
 Only valid rows can be generated.
-By default, all valid rows are selected.
+
+By default:
+- All valid rows are automatically selected
+- Invalid rows cannot be selected
+
+Use the buttons above the table to:
+- Select all valid rows
+- Clear the current selection
 
 
 OUTPUT FILES
 ------------
 
-For each selected row, the app generates STL files:
+For each selected row, the application generates STL files using
+OpenSCAD.
+
+Default filename format:
 
 <index>_<crop>_<cultivar>_a.stl
 <index>_<crop>_<cultivar>_b.stl
@@ -91,39 +107,60 @@ Examples:
 
 If cultivar is blank:
 002_BASIL_a.stl
+002_BASIL_b.stl
 
 Filename rules:
-- Spaces become underscores
-- Illegal characters are replaced
+- Spaces are replaced with underscores
+- Illegal characters are removed or replaced
 - Duplicate names are auto-suffixed unless Overwrite is enabled
 
 
-LOG FILES
----------
+OPTIONS
+-------
 
-Each run writes a log file to the output folder:
+Export A / Export B
+- Control which output variants are generated
+
+Overwrite
+- Allows existing output files to be replaced
+
+Stop on error
+- Stops the batch if any job fails
+
+Start index
+- Sets the starting number for output filenames
+
+
+PROGRESS AND LOGGING
+-------------------
+
+- A progress bar shows overall batch progress
+- Log messages appear live in the application
+- Logs can be copied to the clipboard
+
+Each run also writes a log file to the output folder:
 
 run_YYYYMMDD_HHMMSS.log
 
-The log includes:
+The log file includes:
 - OpenSCAD path used
-- Input file and sheet
+- Input file and sheet name
 - Commands executed
 - Errors and warnings
-
-You can also view logs live in the app and copy them to the clipboard.
+- Final success and failure counts
 
 
 SETTINGS
 --------
 
-The app remembers:
+The application automatically remembers:
 - Last output folder
 - OpenSCAD path
 - Export options
 - Start index
 
-Settings are stored in:
+Settings are saved to:
+
 %APPDATA%\OpenSCAD Sign Batch Generator\config.json
 
 
@@ -131,11 +168,16 @@ TROUBLESHOOTING
 ---------------
 
 If OpenSCAD is not found:
-- Make sure OpenSCAD is installed
-- Use the Browse button to select openscad.exe
+- Confirm OpenSCAD is installed
+- Use the Browse button to select openscad.exe manually
 
-If nothing generates:
+If Generate is disabled:
+- Ensure OpenSCAD is detected
+- Ensure an input file is selected
+- Ensure an output folder is selected
 - Ensure at least one valid row is selected
+
+If nothing is generated:
 - Check the preview Reason column
 - Review the log file in the output folder
 
@@ -144,4 +186,6 @@ LICENSE / SOURCE
 ----------------
 
 This application is open source.
-See the GitHub repository for updates and source code.
+
+Source code and updates are available on GitHub.
+See the LICENSE file included with this distribution.
