@@ -1,25 +1,26 @@
 from __future__ import annotations
 
-import threading
 import queue
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
+from app.engine.config import load_config, save_config
 from app.engine.input_reader import read_input_rows
+from app.engine.logger import RunLogger
 from app.engine.openscad import detect_openscad
 from app.engine.planner import plan_jobs
 from app.engine.resources import resource_path
 from app.engine.runner import run_jobs
-from app.engine.logger import RunLogger
-from app.engine.config import load_config, save_config
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("OpenSCAD Sign Batch Generator")
-        self.geometry("900x850")
+        self.geometry("900x800")
 
         self.msg_queue: queue.Queue[object] = queue.Queue()
         self.worker: threading.Thread | None = None
@@ -31,14 +32,22 @@ class App(tk.Tk):
         self.openscad_path_var = tk.StringVar(value="")
         self.openscad_ok = False
 
-        # Mapping: Treeview item id -> InputRow (valid rows only)
+        # Mapping: Treeview item id -> InputRow-like object (valid rows only)
         self.valid_item_to_row: dict[str, object] = {}
 
         # Selected rows for the current run (set by start_run, read by worker)
         self._selected_rows_for_run: list = []
 
+        # Cell editor overlay
+        self._cell_editor: ttk.Entry | None = None
+        self._cell_editor_info: tuple[str, str] | None = None  # (iid, col_id)
+
+        # Row numbering for GUI-generated rows (manual rows)
+        self._next_row_num = 1
+
         self._build_ui()
         self._apply_config()
+        self._ensure_trailing_blank_row()
         self._update_generate_state()
 
         # Schedule UI polling (dummy arg to satisfy some type checkers)
@@ -46,7 +55,7 @@ class App(tk.Tk):
 
     # ---------------- UI ----------------
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         pad = {"padx": 6, "pady": 4}
 
         # ---- OpenSCAD Status ----
@@ -60,12 +69,15 @@ class App(tk.Tk):
             side="left", fill="x", expand=True, padx=6, pady=4
         )
 
-        ttk.Button(frm_scad, text="Auto-detect", command=self.autodetect_openscad).pack(side="left", padx=6, pady=4)
-        ttk.Button(frm_scad, text="Browse...", command=self.browse_openscad).pack(side="left", padx=6, pady=4)
-
+        ttk.Button(frm_scad, text="Auto-detect", command=self.autodetect_openscad).pack(
+            side="left", padx=6, pady=4
+        )
+        ttk.Button(frm_scad, text="Browse...", command=self.browse_openscad).pack(
+            side="left", padx=6, pady=4
+        )
 
         # ---- Input ----
-        frm_input = ttk.LabelFrame(self, text="Input")
+        frm_input = ttk.LabelFrame(self, text="Input (optional if entering rows manually)")
         self._pack_x(frm_input, pad)
 
         self.input_var = tk.StringVar()
@@ -118,7 +130,6 @@ class App(tk.Tk):
         panes = ttk.Panedwindow(self, orient="vertical")
         panes.pack(fill="both", expand=True, padx=6, pady=4)
 
-
         frm_prev = ttk.LabelFrame(panes, text="Preview (select rows to generate)")
         frm_log = ttk.LabelFrame(panes, text="Log")
 
@@ -131,6 +142,7 @@ class App(tk.Tk):
 
         ttk.Button(toolbar, text="Select Valid", command=self.select_valid_rows).pack(side="left", padx=6, pady=4)
         ttk.Button(toolbar, text="Select None", command=self.select_none).pack(side="left", padx=6, pady=4)
+        ttk.Button(toolbar, text="Delete Selected", command=self.delete_selected_rows).pack(side="left", padx=6, pady=4)
 
         self.preview_status = ttk.Label(toolbar, text="")
         self.preview_status.pack(side="left", padx=12)
@@ -141,12 +153,14 @@ class App(tk.Tk):
 
         columns = ("row", "crop", "cultivar", "valid", "reason")
         self.tree = ttk.Treeview(
-            tree_container,  # IMPORTANT: parent is tree_container, not frm_prev
+            tree_container,
             columns=columns,
             show="headings",
             selectmode="extended",
         )
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._update_generate_state())
+        self.tree.bind("<Double-1>", self._begin_cell_edit)
+        self.tree.bind("<Delete>", lambda _e: self.delete_selected_rows())
 
         self.tree.heading("row", text="Row")
         self.tree.heading("crop", text="crop_name")
@@ -154,11 +168,11 @@ class App(tk.Tk):
         self.tree.heading("valid", text="Valid")
         self.tree.heading("reason", text="Reason")
 
-        self.tree.column("row", width=30, anchor="e")
-        self.tree.column("crop", width=120, anchor="w")
-        self.tree.column("cultivar", width=120, anchor="w")
-        self.tree.column("valid", width=30, anchor="center")
-        self.tree.column("reason", width=200, anchor="w")
+        self.tree.column("row", width=50, anchor="e")
+        self.tree.column("crop", width=180, anchor="w")
+        self.tree.column("cultivar", width=180, anchor="w")
+        self.tree.column("valid", width=60, anchor="center")
+        self.tree.column("reason", width=300, anchor="w")
 
         vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(tree_container, orient="horizontal", command=self.tree.xview)
@@ -174,6 +188,7 @@ class App(tk.Tk):
         # Tag styling
         self.tree.tag_configure("invalid", foreground="gray")
         self.tree.tag_configure("valid", foreground="black")
+        self.tree.tag_configure("blank", foreground="black")
 
         # ---- Controls (kept outside panes) ----
         frm_ctrl = ttk.Frame(self)
@@ -197,7 +212,7 @@ class App(tk.Tk):
         log_container = ttk.Frame(frm_log)
         log_container.pack(fill="both", expand=True)
 
-        self.log_text = tk.Text(log_container, height=12, state="disabled", wrap="none")
+        self.log_text = tk.Text(log_container, height=5, state="disabled", wrap="none")
         self.log_text.pack(side="left", fill="both", expand=True)
 
         log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=self.log_text.yview)
@@ -214,25 +229,24 @@ class App(tk.Tk):
     def _on_var_change(self, _name: str, _index: str, _op: str) -> None:
         self._update_generate_state()
 
-    def pick_input(self):
+    def pick_input(self) -> None:
         path = filedialog.askopenfilename(
             title="Select input file",
-            filetypes=[("Excel or CSV", "*.xlsx *.xlsm *.csv"), ("All files", "*.*")]
+            filetypes=[("Excel or CSV", "*.xlsx *.xlsm *.csv"), ("All files", "*.*")],
         )
         if not path:
             return
         self.input_var.set(path)
         self._update_sheets(Path(path))
         self.load_preview()
-        self._update_generate_state()
 
-    def pick_output(self):
+    def pick_output(self) -> None:
         path = filedialog.askdirectory(title="Select output folder")
         if path:
             self.out_var.set(path)
         self._update_generate_state()
 
-    def _update_sheets(self, path: Path):
+    def _update_sheets(self, path: Path) -> None:
         if path.suffix.lower() == ".csv":
             self.sheet_combo["values"] = []
             self.sheet_combo.set("")
@@ -241,6 +255,7 @@ class App(tk.Tk):
 
         try:
             from app.engine.excel import list_sheets
+
             sheets = list_sheets(path)
             self.sheet_combo["values"] = sheets
             self.sheet_combo.set(sheets[0] if sheets else "")
@@ -260,76 +275,300 @@ class App(tk.Tk):
 
     # ---------------- Preview loading ----------------
 
-    def load_preview(self):
-        self._clear_preview()
-        input_s = self.input_var.get().strip()
-        if not input_s:
-            self.preview_status["text"] = "Select an input file."
-            self._update_generate_state()
-            return
+    def load_preview(self) -> None:
+        # Commit any active edit so we do not lose changes right before append
+        self._destroy_cell_editor(commit=True)
 
-        input_path = Path(input_s)
-        if not input_path.exists():
-            self.preview_status["text"] = "Input file not found."
-            self._update_generate_state()
-            return
-
-        sheet = self.sheet_var.get().strip() or None
+        # Append mode: do not clear existing rows.
+        # Remove trailing blank row temporarily so it does not split appended rows.
+        kids = self.tree.get_children()
+        if kids and self._is_blank_row(kids[-1]):
+            iid = kids[-1]
+            self.tree.delete(iid)
+            self.valid_item_to_row.pop(iid, None)
 
         try:
-            rows, issues, resolved_sheet = read_input_rows(input_path, sheet=sheet)
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+            input_s = self.input_var.get().strip()
+            if not input_s:
+                self.preview_status["text"] = "Select an input file (or enter rows manually)."
+                return
+
+            input_path = Path(input_s)
+            if not input_path.exists():
+                self.preview_status["text"] = "Input file not found."
+                return
+
+            sheet = self.sheet_var.get().strip() or None
+
+            try:
+                rows, issues, resolved_sheet = read_input_rows(input_path, sheet=sheet)
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+                return
+
+            issue_map: dict[int, str] = {}
+            for iss in issues:
+                issue_map.setdefault(int(iss.row_num), iss.reason)
+
+            new_valid_iids: list[str] = []
+            valid_count = 0
+            max_seen_row_num = 0
+
+            for r in rows:
+                try:
+                    rn = int(getattr(r, "row_num", 0) or 0)
+                except Exception:
+                    rn = 0
+                if rn > max_seen_row_num:
+                    max_seen_row_num = rn
+
+                iid = self.tree.insert(
+                    "",
+                    "end",
+                    values=(rn if rn else "", r.crop_name, r.cultivar, "", ""),
+                    tags=("valid",),
+                )
+                self.valid_item_to_row[iid] = r
+                self._recompute_generated_columns(iid)
+                new_valid_iids.append(iid)
+                valid_count += 1
+
+            # Keep manual row numbers above any file row numbers we just added
+            if max_seen_row_num > 0:
+                self._next_row_num = max(self._next_row_num, max_seen_row_num + 1)
+
+            invalid_count = 0
+            for row_num, reason in sorted(issue_map.items()):
+                self.tree.insert(
+                    "",
+                    "end",
+                    values=(row_num, "", "", "No", reason),
+                    tags=("invalid",),
+                )
+                invalid_count += 1
+
+            # Select only the newly loaded valid rows
+            self.tree.selection_remove(self.tree.selection())
+            for iid in new_valid_iids:
+                self.tree.selection_add(iid)
+
+            if resolved_sheet:
+                self.preview_status["text"] = f"Sheet: {resolved_sheet} | Added Valid: {valid_count} | Issues: {invalid_count}"
+            else:
+                self.preview_status["text"] = f"Added Valid: {valid_count} | Issues: {invalid_count}"
+
+        finally:
+            self._ensure_trailing_blank_row()
             self._update_generate_state()
-            return
 
-        issue_map: dict[int, str] = {}
-        for iss in issues:
-            issue_map.setdefault(int(iss.row_num), iss.reason)
-
-        valid_count = 0
-        for r in rows:
-            iid = self.tree.insert(
-                "",
-                "end",
-                values=(r.row_num, r.crop_name, r.cultivar, "Yes", ""),
-                tags=("valid",),
-            )
-            self.valid_item_to_row[iid] = r
-            valid_count += 1
-
-        invalid_count = 0
-        for row_num, reason in sorted(issue_map.items()):
-            self.tree.insert(
-                "",
-                "end",
-                values=(row_num, "", "", "No", reason),
-                tags=("invalid",),
-            )
-            invalid_count += 1
-
-        self.select_valid_rows()
-
-        if resolved_sheet:
-            self.preview_status["text"] = f"Sheet: {resolved_sheet} | Valid: {valid_count} | Issues: {invalid_count}"
-        else:
-            self.preview_status["text"] = f"Valid: {valid_count} | Issues: {invalid_count}"
-
-        self._update_generate_state()
-
-    def _clear_preview(self):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.valid_item_to_row.clear()
-
-    def select_valid_rows(self):
+    def select_valid_rows(self) -> None:
+        self._destroy_cell_editor(commit=True)
         self.tree.selection_remove(self.tree.selection())
         for iid in self.valid_item_to_row.keys():
             self.tree.selection_add(iid)
         self._update_generate_state()
 
-    def select_none(self):
+    def select_none(self) -> None:
+        self._destroy_cell_editor(commit=True)
         self.tree.selection_remove(self.tree.selection())
+        self._update_generate_state()
+
+    # ---------------- Blank row management ----------------
+
+    def _is_blank_row(self, iid: str) -> bool:
+        vals = self.tree.item(iid, "values")
+        if not vals:
+            return True
+        crop = str(vals[1]).strip() if len(vals) > 1 else ""
+        cultivar = str(vals[2]).strip() if len(vals) > 2 else ""
+        return (crop == "") and (cultivar == "")
+
+    def _ensure_trailing_blank_row(self) -> None:
+        kids = self.tree.get_children()
+        if not kids:
+            self._add_blank_row()
+            return
+
+        last = kids[-1]
+        if not self._is_blank_row(last):
+            self._add_blank_row()
+
+    def _add_blank_row(self) -> str:
+        iid = self.tree.insert(
+            "",
+            "end",
+            values=("", "", "", "", ""),
+            tags=("blank",),
+        )
+        return iid
+
+    # ---------------- Cell editing ----------------
+
+    def _begin_cell_edit(self, event: tk.Event) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+
+        iid = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)  # "#1", "#2", ...
+        if not iid or not col:
+            return
+
+        columns = self.tree["columns"]  # ("row","crop","cultivar","valid","reason")
+        col_index = int(col.replace("#", "")) - 1
+        if col_index < 0 or col_index >= len(columns):
+            return
+        col_id = columns[col_index]
+
+        # Only allow editing crop/cultivar
+        if col_id not in {"crop", "cultivar"}:
+            return
+
+        bbox = self.tree.bbox(iid, col_id)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+
+        # Commit any existing edit instead of discarding it
+        self._destroy_cell_editor(commit=True)
+
+        values = list(self.tree.item(iid, "values"))
+        while len(values) < len(columns):
+            values.append("")
+        current = values[col_index]
+
+        e = ttk.Entry(self.tree)
+        e.insert(0, str(current))
+        e.select_range(0, "end")
+        e.focus_set()
+        e.place(x=x, y=y, width=w, height=h)
+
+        e.bind("<Return>", lambda _ev: self._destroy_cell_editor(commit=True))
+        e.bind("<Escape>", lambda _ev: self._destroy_cell_editor(commit=False))
+        e.bind("<FocusOut>", lambda _ev: self._destroy_cell_editor(commit=True))
+
+        self._cell_editor = e
+        self._cell_editor_info = (iid, col_id)
+
+    def _destroy_cell_editor(self, commit: bool) -> None:
+        if not self._cell_editor or not self._cell_editor_info:
+            return
+
+        e = self._cell_editor
+        iid, col_id = self._cell_editor_info
+
+        try:
+            new_value = e.get().strip()
+        finally:
+            e.destroy()
+            self._cell_editor = None
+            self._cell_editor_info = None
+
+        if not commit:
+            return
+
+        columns = self.tree["columns"]
+        values = list(self.tree.item(iid, "values"))
+        while len(values) < len(columns):
+            values.append("")
+
+        if col_id == "crop":
+            values[columns.index("crop")] = new_value
+        elif col_id == "cultivar":
+            values[columns.index("cultivar")] = new_value
+
+        self.tree.item(iid, values=values)
+
+        self._recompute_generated_columns(iid)
+        self._ensure_trailing_blank_row()
+        self._update_generate_state()
+
+    def _recompute_generated_columns(self, iid: str) -> None:
+        columns = self.tree["columns"]
+        values = list(self.tree.item(iid, "values"))
+        while len(values) < len(columns):
+            values.append("")
+
+        crop = str(values[columns.index("crop")]).strip()
+        cultivar = str(values[columns.index("cultivar")]).strip()
+
+        # Blank row
+        if (crop == "") and (cultivar == ""):
+            values[columns.index("row")] = ""
+            values[columns.index("valid")] = ""
+            values[columns.index("reason")] = ""
+            self.tree.item(iid, values=values, tags=("blank",))
+            self.valid_item_to_row.pop(iid, None)
+            return
+
+        # Assign a row number if missing (manual rows)
+        row_s = str(values[columns.index("row")]).strip()
+        if row_s == "":
+            values[columns.index("row")] = str(self._next_row_num)
+            self._next_row_num += 1
+
+        # Validity: both required
+        if crop and cultivar:
+            values[columns.index("valid")] = "Yes"
+            values[columns.index("reason")] = ""
+            self.tree.item(iid, values=values, tags=("valid",))
+
+            # Ensure we have a backing object for manual rows
+            if iid not in self.valid_item_to_row:
+                try:
+                    rn_int = int(values[columns.index("row")])
+                except Exception:
+                    rn_int = 0
+                self.valid_item_to_row[iid] = SimpleNamespace(
+                    row_num=rn_int,
+                    crop_name=crop,
+                    cultivar=cultivar,
+                )
+            else:
+                r = self.valid_item_to_row[iid]
+                if hasattr(r, "crop_name"):
+                    r.crop_name = crop
+                if hasattr(r, "cultivar"):
+                    r.cultivar = cultivar
+                # If the backing object has row_num, keep it aligned with the UI
+                if hasattr(r, "row_num"):
+                    try:
+                        r.row_num = int(values[columns.index("row")])
+                    except Exception:
+                        pass
+        else:
+            values[columns.index("valid")] = "No"
+            if not crop and not cultivar:
+                reason = "Missing crop_name and cultivar"
+            elif not crop:
+                reason = "Missing crop_name"
+            else:
+                reason = "Missing cultivar"
+            values[columns.index("reason")] = reason
+            self.tree.item(iid, values=values, tags=("invalid",))
+            self.valid_item_to_row.pop(iid, None)
+
+    # ---------------- Delete ----------------
+
+    def delete_selected_rows(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+
+        self._destroy_cell_editor(commit=True)
+
+        selection = list(self.tree.selection())
+        if not selection:
+            return
+
+        kids = self.tree.get_children()
+        trailing_blank = kids[-1] if kids else None
+
+        for iid in selection:
+            if trailing_blank and iid == trailing_blank and self._is_blank_row(trailing_blank):
+                continue
+            self.tree.delete(iid)
+            self.valid_item_to_row.pop(iid, None)
+
+        self._ensure_trailing_blank_row()
         self._update_generate_state()
 
     # ---------------- OpenSCAD ----------------
@@ -342,7 +581,7 @@ class App(tk.Tk):
     def browse_openscad(self) -> None:
         path = filedialog.askopenfilename(
             title="Select openscad.exe",
-            filetypes=[("OpenSCAD executable", "openscad.exe"), ("All files", "*.*")]
+            filetypes=[("OpenSCAD executable", "openscad.exe"), ("All files", "*.*")],
         )
         if not path:
             return
@@ -368,20 +607,21 @@ class App(tk.Tk):
     # ---------------- Generate enable/disable ----------------
 
     def _is_ready_to_generate(self) -> bool:
-        input_ok = bool(self.input_var.get().strip())
+        # Input file is optional if you are entering rows manually
         out_ok = bool(self.out_var.get().strip())
         selected_valid = any(iid in self.valid_item_to_row for iid in self.tree.selection())
-        return self.openscad_ok and input_ok and out_ok and selected_valid
+        return self.openscad_ok and out_ok and selected_valid
 
     def _update_generate_state(self) -> None:
         if self.worker and self.worker.is_alive():
             self.run_btn["state"] = "disabled"
             return
         self.run_btn["state"] = "normal" if self._is_ready_to_generate() else "disabled"
+        self._ensure_trailing_blank_row()
 
     # ---------------- Cancel ----------------
 
-    def cancel_run(self):
+    def cancel_run(self) -> None:
         if self.worker and self.worker.is_alive():
             self.cancel_event.set()
             self.msg_queue.put("Cancel requested. Finishing current job...")
@@ -389,9 +629,11 @@ class App(tk.Tk):
 
     # ---------------- Worker ----------------
 
-    def start_run(self):
+    def start_run(self) -> None:
         if self.worker and self.worker.is_alive():
             return
+
+        self._destroy_cell_editor(commit=True)
 
         selected_rows = []
         for iid in self.tree.selection():
@@ -407,6 +649,11 @@ class App(tk.Tk):
             messagebox.showwarning("OpenSCAD not found", "Install OpenSCAD or browse to openscad.exe.")
             return
 
+        out_s = self.out_var.get().strip()
+        if not out_s:
+            messagebox.showwarning("Output folder required", "Select an output folder.")
+            return
+
         self.cancel_event.clear()
         self.progress["value"] = 0
         self.progress["maximum"] = 100
@@ -420,10 +667,9 @@ class App(tk.Tk):
         self.worker = threading.Thread(target=self._run_worker, daemon=True)
         self.worker.start()
 
-    def _run_worker(self):
+    def _run_worker(self) -> None:
         logger = None
         try:
-            input_path = Path(self.input_var.get().strip())
             outdir = Path(self.out_var.get().strip())
 
             raw = self.openscad_path_var.get().strip()
@@ -440,7 +686,7 @@ class App(tk.Tk):
             logger = RunLogger(outdir)
             log = logger.tee(self.msg_queue.put)
 
-            def on_progress(done: int, total: int, _job):
+            def on_progress(done: int, total: int, _job) -> None:
                 self.msg_queue.put(("PROGRESS", done, total))
 
             rows = list(self._selected_rows_for_run)
@@ -475,7 +721,14 @@ class App(tk.Tk):
             log(f"Log file: {logger.path}")
 
             cfg = self.cfg
-            cfg["last_input_dir"] = str(input_path.parent)
+
+            # Input is optional now. Save last_input_dir only if present and exists.
+            input_s = self.input_var.get().strip()
+            if input_s:
+                input_path = Path(input_s)
+                if input_path.exists():
+                    cfg["last_input_dir"] = str(input_path.parent)
+
             cfg["last_output_dir"] = str(outdir)
             cfg["export_a"] = self.export_a.get()
             cfg["export_b"] = self.export_b.get()
@@ -517,18 +770,18 @@ class App(tk.Tk):
 
         self.after(100, self._drain_queue, None)
 
-    def _append_log(self, msg: str):
+    def _append_log(self, msg: str) -> None:
         self.log_text["state"] = "normal"
         self.log_text.insert("end", msg + "\n")
         self.log_text.see("end")
         self.log_text["state"] = "disabled"
 
-    def _clear_log(self):
+    def _clear_log(self) -> None:
         self.log_text["state"] = "normal"
         self.log_text.delete("1.0", "end")
         self.log_text["state"] = "disabled"
 
-    def _apply_config(self):
+    def _apply_config(self) -> None:
         if self.cfg.get("last_output_dir"):
             self.out_var.set(self.cfg["last_output_dir"])
         if self.cfg.get("openscad_path"):
@@ -543,7 +796,7 @@ class App(tk.Tk):
         self._refresh_openscad_status()
 
 
-def main():
+def main() -> None:
     app = App()
     app.mainloop()
 

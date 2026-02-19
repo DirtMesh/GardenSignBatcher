@@ -64,7 +64,7 @@
  [],
  False,
  False,
- 1769324635,
+ 1771529388,
  [('runw.exe',
    'C:\\Users\\Brandon\\PycharmProjects\\GardenSign\\.venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],
