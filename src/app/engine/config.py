@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 
-APP_NAME = "OpenSCADSignBatch"
+APP_NAME = "ModularGardenSignBatch"
 
 
 def _config_dir() -> Path:

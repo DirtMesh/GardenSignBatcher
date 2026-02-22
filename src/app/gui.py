@@ -19,7 +19,7 @@ from app.engine.runner import run_jobs
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("OpenSCAD Sign Batch Generator")
+        self.title("Modular Garden Sign Batch Generator")
         self.geometry("900x800")
 
         self.msg_queue: queue.Queue[object] = queue.Queue()
@@ -678,7 +678,7 @@ class App(tk.Tk):
                 self.msg_queue.put("ERROR: OpenSCAD not found.")
                 return
 
-            scad = resource_path("assets/sign_generator.scad")
+            scad = resource_path("assets/ModularSignGenerator.scad")
             if not scad.exists():
                 self.msg_queue.put(f"ERROR: SCAD file not found: {scad}")
                 return

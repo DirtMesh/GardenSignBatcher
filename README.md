@@ -1,6 +1,6 @@
-# OpenSCAD Sign Batch Generator
+# Garden Sign Batch Generator
 
-OpenSCAD Sign Batch Generator is a Windows desktop application for
+Garden Sign Batch Generator is a Windows desktop application for
 batch-generating STL files using OpenSCAD.
 
 Data can be loaded from Excel or CSV files, or entered manually directly
@@ -243,7 +243,7 @@ The application automatically remembers:
 
 Settings are saved to:
 
-`%APPDATA%\OpenSCAD Sign Batch Generator\config.json`
+`%APPDATA%\ModularGardenSignBatch\config.json`
 
 ---
 
@@ -270,4 +270,5 @@ If nothing is generated:
 This application is open source.
 
 Source code and updates are available on GitHub.
-See the `LICENSE` file included with this distribution."
+
+

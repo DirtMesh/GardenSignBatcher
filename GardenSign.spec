@@ -5,7 +5,7 @@ a = Analysis(
     ['src\\app\\gui.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('src\\assets\\sign_generator.scad', 'assets')],
+    datas=[('src\\assets\\ModularSignGenerator.scad', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

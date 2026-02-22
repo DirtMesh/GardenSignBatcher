@@ -24,7 +24,7 @@ def write_run_header(
     scad: Path,
     options: dict,
 ) -> None:
-    log("=== OpenSCAD Sign Batch Generator ===")
+    log("=== Modular Garden Sign Batch Generator ===")
     log(f"Timestamp: {datetime.now().isoformat(timespec='seconds')}")
     log(f"Input file: {input_path}")
     if sheet:

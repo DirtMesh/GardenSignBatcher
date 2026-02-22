@@ -1,4 +1,20 @@
-// Garden Sign v2
+// ============================================================================
+// Modular Sign Generator – Name Plate Maker
+// DirtMesh Parametric Tools
+//
+// Author & Copyright: © 2026 Brandon Stark
+// Publisher: DirtMesh
+// Created: 2026-02-21
+// License: MIT
+//
+// Description:
+// Parametric OpenSCAD system for generating modular plant labels
+// with dovetail mounts and dual-material text.
+//
+// Units: millimeters
+// ============================================================================
+
+// Version: 1.0.0
 
 /* [Crop Entry] */
 crop_name = "Broccoli";
